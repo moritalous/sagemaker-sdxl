@@ -7,6 +7,7 @@ from diffusers import (StableDiffusionXLImg2ImgPipeline,
                        StableDiffusionXLInpaintPipeline,
                        StableDiffusionXLPipeline)
 from PIL import Image
+from pytorch_lightning import seed_everything
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -26,47 +27,38 @@ def base64_to_image(base64_image: str) -> Image.Image:
 def model_fn(model_dir, context=None):
     print("model_fn")
 
-    # base_pipeline = StableDiffusionXLPipeline.from_single_file(
-    #     f"{model_dir}/sd_xl_base_1.0.safetensors",
-    #     torch_dtype=torch.float16,
-    #     use_safetensors=True,
-    # )
-    # base_pipeline.load_lora_weights(
-    #     f"{model_dir}/pytorch_lora_weights.safetensors",
-    #     use_safetensors=True,
-    # )
-    # base_pipeline = base_pipeline.to("cuda")
+    base_pipeline = StableDiffusionXLPipeline.from_single_file(
+        f"{model_dir}/sd_xl_base_1.0.safetensors",
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    )
+    base_pipeline.load_lora_weights(
+        f"{model_dir}/pytorch_lora_weights.safetensors",
+        use_safetensors=True,
+    )
 
-    # img2img_pipeline = StableDiffusionXLImg2ImgPipeline.from_single_file(
-    #     f"{model_dir}/sd_xl_base_1.0.safetensors",
-    #     torch_dtype=torch.float16,
-    #     use_safetensors=True,
-    # )
-    # img2img_pipeline.load_lora_weights(
-    #     f"{model_dir}/pytorch_lora_weights.safetensors",
-    #     use_safetensors=True,
-    # )
-    # img2img_pipeline = img2img_pipeline.to("cuda")
+    img2img_pipeline = StableDiffusionXLImg2ImgPipeline.from_pipe(
+        base_pipeline)
+    img2img_pipeline.load_lora_weights(
+        f"{model_dir}/pytorch_lora_weights.safetensors",
+        use_safetensors=True,
+    )
 
-    # inpainting_pipeline = StableDiffusionXLInpaintPipeline.from_single_file(
-    #     f"{model_dir}/sd_xl_base_1.0.safetensors",
-    #     torch_dtype=torch.float16,
-    #     use_safetensors=True,
-    # )
-    # inpainting_pipeline.load_lora_weights(
-    #     f"{model_dir}/pytorch_lora_weights.safetensors",
-    #     use_safetensors=True,
-    # )
-    # inpainting_pipeline = inpainting_pipeline.to("cuda")
+    inpainting_pipeline = StableDiffusionXLInpaintPipeline.from_pipe(
+        base_pipeline)
+    inpainting_pipeline.load_lora_weights(
+        f"{model_dir}/pytorch_lora_weights.safetensors",
+        use_safetensors=True,
+    )
 
     # refiner_pipeline = StableDiffusionXLImg2ImgPipeline.from_single_file(
     #     f"{model_dir}/sd_xl_refiner_1.0.safetensors",
     #     torch_dtype=torch.float16,
     #     use_safetensors=True,
     # )
+    # refiner_pipeline.enable_model_cpu_offload()
 
-    # return {"base": base_pipeline, "img2img": img2img_pipeline, "inpaint": inpainting_pipeline, "refiner": refiner_pipeline}
-    return {"model_dir": model_dir}
+    return {"base": base_pipeline, "img2img": img2img_pipeline, "inpaint": inpainting_pipeline}
 
 
 def input_fn(request_body, request_content_type):
@@ -80,7 +72,7 @@ def predict_fn(data, model, context=None):
 
     init_image = None
     mask_image = None
-    # seed = 0
+    seed = 0
     steps = 50
     height = 1024
     width = 1024
@@ -97,8 +89,9 @@ def predict_fn(data, model, context=None):
         cfg_scale = data["cfg_scale"]
     if "steps" in data:
         steps = data["steps"]
-    # if "seed" in data:
-    #     seed = data["seed"]
+    if "seed" in data:
+        seed = data["seed"]
+        seed_everything(seed)
     if "init_image" in data:
         init_image = base64_to_image(data["init_image"])
     if "mask_image" in data:
@@ -106,24 +99,11 @@ def predict_fn(data, model, context=None):
     if "image_strength" in data:
         image_strength = data["image_strength"]
 
-    model_dir = model["model_dir"]
-
     if init_image is None:
         print("text2img")
 
-        base_pipeline = StableDiffusionXLPipeline.from_single_file(
-            f"{model_dir}/sd_xl_base_1.0.safetensors",
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-        )
-        base_pipeline.load_lora_weights(
-            f"{model_dir}/pytorch_lora_weights.safetensors",
-            use_safetensors=True,
-        )
-        base_pipeline = base_pipeline.to("cuda")
+        pipe = model["base"].to("cuda")
 
-        pipe = base_pipeline
-        # pipe = model["base"]
         output = pipe(
             prompt=prompt,
             height=height,
@@ -133,24 +113,12 @@ def predict_fn(data, model, context=None):
         ).images[0]
 
         del pipe
-        
 
     elif mask_image is None:
         print("img2img")
 
-        img2img_pipeline = StableDiffusionXLImg2ImgPipeline.from_single_file(
-            f"{model_dir}/sd_xl_base_1.0.safetensors",
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-        )
-        img2img_pipeline.load_lora_weights(
-            f"{model_dir}/pytorch_lora_weights.safetensors",
-            use_safetensors=True,
-        )
-        img2img_pipeline = img2img_pipeline.to("cuda")
+        pipe = model["img2img"].to("cuda")
 
-        pipe = img2img_pipeline
-        # pipe = model["img2img"]
         output = pipe(
             prompt,
             image=init_image,
@@ -164,19 +132,8 @@ def predict_fn(data, model, context=None):
     else:
         print("inpaint")
 
-        inpainting_pipeline = StableDiffusionXLInpaintPipeline.from_single_file(
-            f"{model_dir}/sd_xl_base_1.0.safetensors",
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-        )
-        inpainting_pipeline.load_lora_weights(
-            f"{model_dir}/pytorch_lora_weights.safetensors",
-            use_safetensors=True,
-        )
-        inpainting_pipeline = inpainting_pipeline.to("cuda")
+        pipe = model["inpaint"].to("cuda")
 
-        pipe = inpainting_pipeline
-        # pipe = model["inpaint"]
         output = pipe(
             prompt=prompt,
             image=init_image,
@@ -191,6 +148,7 @@ def predict_fn(data, model, context=None):
         del pipe
 
     torch.cuda.empty_cache()
+
     return output
 
 
